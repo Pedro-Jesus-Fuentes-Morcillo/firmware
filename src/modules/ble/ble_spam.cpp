@@ -1086,7 +1086,14 @@ static esp_power_level_t bleSpamTxPowerToLevel(BleSpamTxPower level) {
 }
 
 static void bleSpamApplyTxPower(BleSpamTxPower level) {
-    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, bleSpamTxPowerToLevel(level));
+    esp_power_level_t lvl = bleSpamTxPowerToLevel(level);
+    esp_err_t rcAdv = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, lvl);
+    esp_err_t rcDef = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, lvl);
+    esp_power_level_t readBack = esp_ble_tx_power_get(ESP_BLE_PWR_TYPE_ADV);
+    Serial.printf(
+        "[BLESPAM-PWR] want lvl=%d | set ADV rc=%d DEFAULT rc=%d | readback ADV=%d\n",
+        (int)lvl, (int)rcAdv, (int)rcDef, (int)readBack
+    );
 }
 
 static void bleSpamSetMac(const uint8_t *mac) {
@@ -1315,6 +1322,9 @@ static bool bleSpamBuildAdvertisementData(
                 samsungDataVec.assign(Buds_Data, Buds_Data + bi);
                 AdvData.addData(samsungDataVec);
 #endif
+                // NOTE: do NOT call setFlags() here. Buds carry a manual Flags
+                // AD (0x1A, dual-mode BR/EDR) embedded above; NimBLE's setFlags()
+                // would OR in BLE_HS_ADV_F_BREDR_UNSUP and overwrite it to 0x06.
             } else {
                 uint8_t model = watch_models[random(watch_models_count)].value;
                 uint8_t Watch_Data[15] = {
@@ -1326,8 +1336,8 @@ static bool bleSpamBuildAdvertisementData(
                 samsungDataVec.assign(Watch_Data, Watch_Data + 15);
                 AdvData.addData(samsungDataVec);
 #endif
+                AdvData.setFlags(0x06);
             }
-            AdvData.setFlags(0x06);
             advertisementData = AdvData;
             return true;
         }
