@@ -1086,14 +1086,7 @@ static esp_power_level_t bleSpamTxPowerToLevel(BleSpamTxPower level) {
 }
 
 static void bleSpamApplyTxPower(BleSpamTxPower level) {
-    esp_power_level_t lvl = bleSpamTxPowerToLevel(level);
-    esp_err_t rcAdv = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, lvl);
-    esp_err_t rcDef = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, lvl);
-    esp_power_level_t readBack = esp_ble_tx_power_get(ESP_BLE_PWR_TYPE_ADV);
-    Serial.printf(
-        "[BLESPAM-PWR] want lvl=%d | set ADV rc=%d DEFAULT rc=%d | readback ADV=%d\n",
-        (int)lvl, (int)rcAdv, (int)rcDef, (int)readBack
-    );
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, bleSpamTxPowerToLevel(level));
 }
 
 static void bleSpamSetMac(const uint8_t *mac) {
