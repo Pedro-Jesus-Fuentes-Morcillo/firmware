@@ -3,6 +3,7 @@
 
 #include <MenuItemInterface.h>
 
+#include "menu_items/ArsenalMenu.h"
 #include "menu_items/BleMenu.h"
 #include "menu_items/ClockMenu.h"
 #include "menu_items/ConfigMenu.h"
@@ -22,6 +23,7 @@
 class MainMenu {
 public:
     FileMenu fileMenu;
+    ArsenalMenu arsenalMenu;
     BleMenu bleMenu;
     ClockMenu clockMenu;
     ConnectMenu connectMenu;
