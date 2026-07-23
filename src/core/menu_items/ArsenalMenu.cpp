@@ -4,6 +4,7 @@
 #include "modules/arsenal/arsenal.h"
 #include "modules/arsenal/arsenal_background.h"
 #include "modules/arsenal/arsenal_config.h"
+#include "modules/ir/ir_remote_app.h"
 
 void ArsenalMenu::optionsMenu() {
     if (!arsenal_pin_check()) {
@@ -185,6 +186,7 @@ void ArsenalMenu::utilityMenu() {
     options = {
         {"Password Gen",       arsenal_password_generator       },
         {"QR Poisoner",        arsenal_qr_poisoner              },
+        {"IR Remote",          ir_remote_app                    },
 #if !LITE_VERSION
         {"NFC Biz Card",       arsenal_nfc_business_card        },
 #endif
