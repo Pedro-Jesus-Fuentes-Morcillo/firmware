@@ -7,14 +7,9 @@
 #include <esp_wifi.h>
 #include <globals.h>
 
-#if defined(USE_NRF24_VIA_SPI)
 #include "modules/NRF24/nrf_common.h"
-#endif
-
-#if defined(USE_CC1101_VIA_SPI)
 #include "modules/rf/rf_utils.h"
 #include <ELECHOUSE_CC1101_SRC_DRV.h>
-#endif
 
 
 static uint8_t deauth_frame[] = {
@@ -91,19 +86,16 @@ static void wifi_jam_cycle(void) {
 
 
 static void ble_jam_cycle(void) {
-#if defined(USE_NRF24_VIA_SPI)
     static uint8_t bleChannel = 0;
     static const uint8_t bleAdvChannels[] = {2, 26, 80};
     NRFradio.stopConstCarrier();
     NRFradio.startConstCarrier(RF24_PA_MAX, bleAdvChannels[bleChannel]);
     bleChannel = (bleChannel + 1) % 3;
     jam_ble_sent++;
-#endif
 }
 
 
 static void subghz_jam_cycle(void) {
-#if defined(USE_CC1101_VIA_SPI)
     // Hold each frequency for a meaningful stretch instead of a 500us blip.
     // A real jammer needs dwell time per band; the old code entered TX for
     // half a millisecond then looped back and reset the radio state machine
@@ -120,36 +112,26 @@ static void subghz_jam_cycle(void) {
         freqIdx = (freqIdx + 1) % 4;
         jam_subghz_sent++;
     }
-#endif
 }
 
 
 static void nrf24_jam_cycle(void) {
-#if defined(USE_NRF24_VIA_SPI)
     static uint8_t nrfChannel = 0;
     NRFradio.stopConstCarrier();
     NRFradio.startConstCarrier(RF24_PA_MAX, nrfChannel);
     nrfChannel = (nrfChannel + 2) % 126;
     jam_nrf24_sent++;
-#endif
 }
 
 
 void jamall_init(JamAllState &state) {
+    bool hasCc1101 = bruceConfigPins.CC1101_bus.cs != GPIO_NUM_NC;
+    bool hasNrf24 = bruceConfigPins.NRF24_bus.cs != GPIO_NUM_NC;
+
     state.bands[JAM_WIFI_24] = {"WiFi 2.4", true, true, false, 0};
-    state.bands[JAM_BLE] = {"BLE", true, true, false, 0};
-
-#if defined(USE_CC1101_VIA_SPI)
-    state.bands[JAM_SUBGHZ] = {"Sub-GHz", true, true, false, 0};
-#else
-    state.bands[JAM_SUBGHZ] = {"Sub-GHz", false, false, false, 0};
-#endif
-
-#if defined(USE_NRF24_VIA_SPI)
-    state.bands[JAM_NRF24] = {"NRF24", true, true, false, 0};
-#else
-    state.bands[JAM_NRF24] = {"NRF24", false, false, false, 0};
-#endif
+    state.bands[JAM_BLE] = {"BLE", hasNrf24, hasNrf24, false, 0};
+    state.bands[JAM_SUBGHZ] = {"Sub-GHz", hasCc1101, hasCc1101, false, 0};
+    state.bands[JAM_NRF24] = {"NRF24", hasNrf24, hasNrf24, false, 0};
 
     state.startTime = 0;
     state.timeout = 5 * 60 * 1000;
@@ -163,7 +145,6 @@ void jamall_start_band(JamAllState &state, JamBand band) {
     // BLE and NRF24 share the single NRF24L01 radio, so they cannot run
     // together. Enabling one disables the other to stop them fighting over
     // startConstCarrier/stopConstCarrier every cycle.
-#if defined(USE_NRF24_VIA_SPI)
     if (band == JAM_BLE) {
         if (state.bands[JAM_NRF24].active) jamall_stop_band(state, JAM_NRF24);
         state.bands[JAM_NRF24].enabled = false;
@@ -171,7 +152,6 @@ void jamall_start_band(JamAllState &state, JamBand band) {
         if (state.bands[JAM_BLE].active) jamall_stop_band(state, JAM_BLE);
         state.bands[JAM_BLE].enabled = false;
     }
-#endif
 
     state.bands[band].active = true;
     state.bands[band].enabled = true;
@@ -188,12 +168,10 @@ void jamall_start_all(JamAllState &state) {
 
     // BLE and NRF24 share one radio. If both are enabled, keep BLE and drop
     // NRF24 so the radio is not yanked between two jam cycles every tick.
-#if defined(USE_NRF24_VIA_SPI)
     if (state.bands[JAM_BLE].enabled && state.bands[JAM_NRF24].enabled) {
         state.bands[JAM_NRF24].enabled = false;
         state.bands[JAM_NRF24].active = false;
     }
-#endif
 
     if (state.bands[JAM_WIFI_24].enabled && state.bands[JAM_WIFI_24].available) {
         WiFi.mode(WIFI_STA);
@@ -201,31 +179,25 @@ void jamall_start_all(JamAllState &state) {
         state.bands[JAM_WIFI_24].active = true;
     }
 
-#if defined(USE_NRF24_VIA_SPI)
     if (state.bands[JAM_BLE].enabled && state.bands[JAM_BLE].available) {
         if (nrf_start(NRF_MODE_SPI)) {
             NRFradio.stopConstCarrier();
             state.bands[JAM_BLE].active = true;
         }
     }
-#endif
 
-#if defined(USE_CC1101_VIA_SPI)
     if (state.bands[JAM_SUBGHZ].enabled && state.bands[JAM_SUBGHZ].available) {
         if (initRfModule("tx", 433.92)) {
             state.bands[JAM_SUBGHZ].active = true;
         }
     }
-#endif
 
-#if defined(USE_NRF24_VIA_SPI)
     if (state.bands[JAM_NRF24].enabled && state.bands[JAM_NRF24].available) {
         if (nrf_start(NRF_MODE_SPI)) {
             NRFradio.stopConstCarrier();
             state.bands[JAM_NRF24].active = true;
         }
     }
-#endif
 
     state.startTime = millis();
     state.running = true;
@@ -236,19 +208,15 @@ void jamall_stop_all(JamAllState &state) {
         esp_wifi_set_promiscuous(false);
     }
 
-#if defined(USE_NRF24_VIA_SPI)
     if (state.bands[JAM_BLE].active || state.bands[JAM_NRF24].active) {
         NRFradio.stopConstCarrier();
         NRFradio.flush_tx();
         NRFradio.powerDown();
     }
-#endif
 
-#if defined(USE_CC1101_VIA_SPI)
     if (state.bands[JAM_SUBGHZ].active) {
         deinitRfModule();
     }
-#endif
 
     for (int i = 0; i < JAM_BAND_COUNT; i++) {
         state.bands[i].active = false;
