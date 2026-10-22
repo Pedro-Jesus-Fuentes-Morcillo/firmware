@@ -5,7 +5,7 @@
 #include <M5Unified.h>
 #endif
 
-#if defined(HAS_NS4168_SPKR)
+#if defined(HAS_SPEAKER)
 #include "AudioFileSourceFunction.h"
 #include "AudioGeneratorAAC.h"
 #include "AudioGeneratorFLAC.h"
@@ -129,7 +129,12 @@ static AudioOutputI2S *createConfiguredAudioOutput() {
         return nullptr;
     }
 
-    audioout->SetPinout(BCLK, WCLK, DOUT, MCLK);
+    const BruceConfigPins::SpeakerPins &spkr = bruceConfigPins.speaker_bus;
+    // A board leaves mclk at GPIO_NUM_NC when its codec derives MCLK from BCLK (e.g. Cardputer
+    // ADV's ES8311, whose GPIO43 is LRCLK only -- routing MCLK to the same GPIO would overwrite
+    // LRCLK in the GPIO matrix).
+    if (spkr.mclk == GPIO_NUM_NC) audioout->SetPinout(spkr.bclk, spkr.ws, spkr.dout);
+    else audioout->SetPinout(spkr.bclk, spkr.ws, spkr.dout, spkr.mclk);
     audioout->SetGain(bruceConfig.soundVolume / AUDIO_VOLUME_MAX);
 
     return audioout;
@@ -660,9 +665,7 @@ void playTone(unsigned int frequency, unsigned long duration, short waveType) {
     _setup_codec_speaker(true);
 
     if (frequency == 0 || duration == 0) {
-        if (frequency == 0 && duration > 0) {
-            delay(duration);
-        }
+        if (frequency == 0 && duration > 0) { delay(duration); }
         _setup_codec_speaker(false);
         return;
     }
@@ -730,13 +733,92 @@ void playTone(unsigned int frequency, unsigned long duration, short waveType) {
 
 #endif
 
+#if defined(HAS_SPEAKER) && defined(ARDUINO_M5STACK_CARDPUTER)
+static i2s_chan_handle_t cardputerToneTx = nullptr;
+
+static bool beginCardputerToneOutput() {
+    if (cardputerToneTx) return true;
+
+    _setup_codec_speaker(true);
+    delay(20);
+
+    i2s_chan_config_t chanCfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
+    chanCfg.dma_desc_num = 4;
+    chanCfg.dma_frame_num = 128;
+    if (i2s_new_channel(&chanCfg, &cardputerToneTx, nullptr) != ESP_OK) {
+        cardputerToneTx = nullptr;
+        return false;
+    }
+
+    i2s_std_config_t stdCfg = {
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(48000),
+        .slot_cfg = I2S_STD_MSB_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+        .gpio_cfg = {
+                     .mclk = I2S_GPIO_UNUSED,
+                     .bclk = bruceConfigPins.speaker_bus.bclk,
+                     .ws = bruceConfigPins.speaker_bus.ws,
+                     .dout = bruceConfigPins.speaker_bus.dout,
+                     .din = I2S_GPIO_UNUSED,
+                     .invert_flags = {.mclk_inv = false, .bclk_inv = false, .ws_inv = false},
+                     },
+    };
+    stdCfg.slot_cfg.bit_shift = true;
+    if (i2s_channel_init_std_mode(cardputerToneTx, &stdCfg) != ESP_OK ||
+        i2s_channel_enable(cardputerToneTx) != ESP_OK) {
+        i2s_del_channel(cardputerToneTx);
+        cardputerToneTx = nullptr;
+        return false;
+    }
+
+    int16_t silence[64] = {};
+    size_t written = 0;
+    i2s_channel_write(cardputerToneTx, silence, sizeof(silence), &written, portMAX_DELAY);
+    return true;
+}
+
+static void cardputerTone(unsigned int frequency, unsigned long duration) {
+    if (frequency == 0 || duration == 0) {
+        if (duration) delay(duration);
+        return;
+    }
+    if (!beginCardputerToneOutput()) return;
+
+    int16_t samples[128 * 2];
+    const int16_t amplitude = (int16_t)(12000 * bruceConfig.soundVolume / 100);
+    const uint32_t halfPeriod = std::max(1U, 48000U / (frequency * 2U));
+    uint32_t phase = 0;
+    uint32_t framesLeft = (48000U * duration) / 1000U;
+    while (framesLeft) {
+        uint32_t frames = framesLeft > 128 ? 128 : framesLeft;
+        for (uint32_t i = 0; i < frames; ++i) {
+            int16_t sample = ((phase / halfPeriod) & 1U) ? amplitude : -amplitude;
+            samples[i * 2] = sample;
+            samples[i * 2 + 1] = sample;
+            ++phase;
+        }
+        size_t written = 0;
+        i2s_channel_write(cardputerToneTx, samples, frames * 4, &written, portMAX_DELAY);
+        framesLeft -= frames;
+    }
+
+    // The ESP32 I2S peripheral repeats the tail of the last DMA buffer on
+    // underrun. Queue enough zero frames to replace every descriptor so a
+    // short tone cannot become a continuous squeal after it returns.
+    memset(samples, 0, sizeof(samples));
+    for (int i = 0; i < 4; ++i) {
+        size_t written = 0;
+        i2s_channel_write(cardputerToneTx, samples, sizeof(samples), &written, portMAX_DELAY);
+    }
+}
+#endif
+
 void _tone(unsigned int frequency, unsigned long duration) {
     if (!bruceConfig.soundEnabled) return;
 
-#if defined(BUZZ_PIN)
-    tone(BUZZ_PIN, frequency, duration);
-#elif defined(HAS_NS4168_SPKR)
-#if __has_include(<M5Unified.h>)
+#if defined(HAS_SPEAKER)
+#if defined(ARDUINO_M5STACK_CARDPUTER)
+    cardputerTone(frequency, duration);
+#elif __has_include(<M5Unified.h>)
     if (frequency == 0) {
         if (duration > 0) delay(duration);
     } else {
@@ -748,5 +830,8 @@ void _tone(unsigned int frequency, unsigned long duration) {
 #else
     playTone(frequency, duration, 0);
 #endif
+#else
+    // No I2S speaker: fall back to the buzzer, which stays silent until a pin is configured.
+    if (bruceConfigPins.buzzer > 0) tone((uint8_t)bruceConfigPins.buzzer, frequency, duration);
 #endif
 }
