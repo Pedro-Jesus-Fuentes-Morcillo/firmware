@@ -110,6 +110,23 @@ bool EvilPortal::setup() {
     memcpy(deauth_frame, deauth_frame_default, sizeof(deauth_frame_default));
     wsl_bypasser_send_raw_frame(&ap_record, _channel);
 
+    if (apName.isEmpty()) {
+        if (bruceConfig.evilWifiNames.empty()) {
+            apName_from_keyboard();
+        } else {
+            options = {
+                {"Custom Wifi", [this]() { apName_from_keyboard(); }}
+            };
+            for (const auto &_wifi : bruceConfig.evilWifiNames) {
+                options.emplace_back(_wifi.c_str(), [this, _wifi]() { this->apName = _wifi; });
+            }
+            loopOptions(options);
+        }
+    }
+
+    if (apName.length() > 32) apName = apName.substring(0, 32);
+    if (!_autoMode && !_verifyPwd) apPassword_from_keyboard();
+
     options = {
         {"Default",
          [this]() {
